@@ -86,18 +86,12 @@ def analyze_audio(audio_path: str) -> dict:
     """
     result = {
         "transcript":    "",
-        "emotion":       None,
+        "emotion":       "neutral",
         "emotion_label": None,
         "probabilities": {},
         "audio_features": {},
         "error":         None,
     }
-
-    try:
-        _load_models()
-    except FileNotFoundError as e:
-        result["error"] = str(e)
-        return result
 
     # Step 1 — Transcribe
     try:
@@ -106,7 +100,16 @@ def analyze_audio(audio_path: str) -> dict:
         result["error"] = f"Transcription failed: {e}"
         return result
 
-    # Step 2 — Extract features
+    # Step 2 — Load emotion model. If missing, keep transcript and return neutral.
+    model_ready = True
+    try:
+        _load_models()
+    except FileNotFoundError as e:
+        model_ready = False
+        result["error"] = str(e)
+        return result
+
+    # Step 3 — Extract features
     try:
         features = extract_features(audio_path)
         vec = features_to_vector(features)
@@ -114,7 +117,7 @@ def analyze_audio(audio_path: str) -> dict:
         result["error"] = f"Feature extraction failed: {e}"
         return result
 
-    # Step 3 — Classify emotion
+    # Step 4 — Classify emotion
     try:
         vec_scaled = _scaler.transform(vec.reshape(1, -1))
         label_int  = int(_clf.predict(vec_scaled)[0])
@@ -130,7 +133,7 @@ def analyze_audio(audio_path: str) -> dict:
         result["error"] = f"Classification failed: {e}"
         return result
 
-    # Step 4 — Surface key audio features for fusion layer
+    # Step 5 — Surface key audio features for fusion layer
     result["audio_features"] = {
         "rms_mean":       features.get("rms_mean", 0.0),
         "pitch_variance": features.get("pitch_variance", 0.0),

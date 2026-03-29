@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import tempfile
 from collections import Counter
 from datetime import datetime
@@ -135,18 +136,8 @@ def _safe_generate_response(user_text, cycle_phase, audio_result):
         return generate_response(user_text, cycle_phase, audio_result)
     except Exception:
         # Lightweight fallback so demo doesn't hard-fail if model load is unavailable.
-        lower = user_text.lower()
-        tier = "GREEN"
-        if any(k in lower for k in ["want to die", "end it", "better off without me", "kill myself"]):
-            tier = "RED"
-        elif any(k in lower for k in ["not good enough", "stupid", "worthless", "i always fail"]):
-            tier = "YELLOW"
-
-        fallback = {
-            "GREEN": "That sounds genuinely hard. Your feelings make sense, and this space is here for you.",
-            "YELLOW": "You're being very hard on yourself right now. That inner critic feels loud, but it is not the full truth of who you are.",
-            "RED": "What you're carrying sounds heavier than a bad day. Please reach out to 988 (call or text) or text HOME to 741741. You deserve support right now.",
-        }
+        tier = _classify_tier_heuristic(user_text)
+        fallback = _fallback_response_for_tier(tier, user_text)
         return {
             "tier": tier,
             "response": fallback[tier],
@@ -253,6 +244,65 @@ def _wrap_text(text, width):
     if line:
         lines.append(" ".join(line))
     return lines
+
+
+def _classify_tier_heuristic(text):
+    lower = (text or "").strip().lower()
+
+    red_patterns = [
+        r"\bwant\s+to\s+die\b",
+        r"\bw(?:a|o|u)?nt\s+to\s+end\b",
+        r"\bend\s+things\b",
+        r"\bend\s+it\b",
+        r"\bkill\s+myself\b",
+        r"\bbetter\s+off\s+without\s+me\b",
+        r"\bno\s+point\s+(to\s+)?living\b",
+        r"\bdon['’]?t\s+want\s+to\s+be\s+here\b",
+    ]
+    if any(re.search(p, lower) for p in red_patterns):
+        return "RED"
+
+    yellow_patterns = [
+        r"\bnot\s+good\s+enough\b",
+        r"\bworthless\b",
+        r"\bstupid\b",
+        r"\bi\s+always\s+fail\b",
+        r"\bi\s+hate\s+myself\b",
+        r"\bnobody\s+cares\b",
+    ]
+    if any(re.search(p, lower) for p in yellow_patterns):
+        return "YELLOW"
+
+    return "GREEN"
+
+
+def _fallback_response_for_tier(tier, text):
+    trimmed = (text or "").strip()
+
+    if tier == "RED":
+        return {
+            "RED": (
+                "What you're sharing sounds heavier than a bad day, and you deserve immediate support. "
+                "Please call or text 988 right now, or text HOME to 741741. You do not have to carry this alone."
+            )
+        }
+
+    if tier == "YELLOW":
+        return {
+            "YELLOW": (
+                "There's a lot of self-criticism in what you wrote, and that can feel exhausting. "
+                "That inner voice is loud right now, but it isn't the full truth of who you are."
+            )
+        }
+
+    # GREEN response still reflects user text so it doesn't feel repeated.
+    detail = trimmed[:90] + ("..." if len(trimmed) > 90 else "")
+    return {
+        "GREEN": (
+            f"That sounds like a really hard moment. You said: \"{detail}\". "
+            "Your feelings make sense, and this space is here for you."
+        )
+    }
 
 
 def _summarize_chat_messages(messages):

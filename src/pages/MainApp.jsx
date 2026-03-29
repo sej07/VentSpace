@@ -685,13 +685,15 @@ function TodayScreen({ onAddEntry, cycleContext }) {
       if (!res.ok) throw new Error("audio analyze request failed");
 
       const data = await res.json();
-      const transcript = (data.transcript || text || "voice note").trim();
+      const transcript = (data.transcript || "").trim();
+      const userDisplayText = transcript || "(audio clip - transcription unavailable)";
       const level = mapTierToLevel(data.spectrum_level || data.tier);
-      addTurn(transcript, data.response || "Thanks for sharing that.", level, {
+      addTurn(userDisplayText, data.response || "Thanks for sharing that.", level, {
         source: "backend-audio",
         tier: data.tier,
         spectrum_score: data.spectrum_score,
         audio_emotion: data.audio_emotion,
+        audio_error: data.audio_error || null,
       });
     } catch (err) {
       const fallbackText = text.trim() || "voice note";
