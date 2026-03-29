@@ -9,6 +9,10 @@ Vent freely. Understand yourself. Know when to ask for help.
 
 Integrated period tracking, AI-powered venting analysis, and supportive chat responses with cycle-aware insights.
 
+## Presentation
+
+- [VentSpace Presentation PDF](Ventspace_presentation.pdf)
+
 ## Inspiration
 Nearly half of ChatGPT users already turn to it as their primary support when dealing with mental health struggles. Women make up nearly 60% of that group. People are already reaching out to AI when they're hurting. The problem is that general-purpose AI isn't built for this. It doesn't track patterns, it doesn't understand context. VentSpace is built specifically for what's already happening and does it right. VentSpace is an AI companion that listens to women's venting, detects harmful patterns and adjusts its understanding based on their menstrual cycle phase, as well as generates ready-made reports for healthcare professionals.
 
