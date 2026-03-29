@@ -169,7 +169,7 @@ This project was built with the assistance of AI tools like Claude for developme
 **RAG collection warning on startup**
 - RAG is optional. Skip the build step or run `build_amod_collection()` once.
 
-## Video Link:
+## Video Link: https://youtu.be/qJl6RKurQww
 
 ## Presentation Link: 
 - [VentSpace Presentation PDF](Ventspace_presentation.pdf)
