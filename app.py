@@ -5,10 +5,9 @@ import tempfile
 from collections import Counter
 from datetime import datetime
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
-
-from ventspace_llm import generate_response, get_cycle_phase
+from ventspace_llm import generate_response, get_cycle_phase, load_model, build_amod_collection
 from audio_pipeline.audio_pipeline import analyze_audio
 
 _LLM_DISABLED_REASON = None
@@ -41,6 +40,7 @@ def create_app():
         info = get_cycle_phase(start_date, cycle_length=cycle_length)
         return jsonify(info)
 
+    @app.route("/node/d1007/5050/analyze", methods=["POST", "OPTIONS"])
     @app.post("/analyze")
     def analyze():
         cycle_phase = "unknown"
@@ -177,6 +177,8 @@ def _fuse_scores(tier, audio_emotion, cycle_phase):
     score = 0.60 * text_score + 0.40 * audio_score + phase_adjust.get((cycle_phase or "unknown").lower(), 0.0)
     score = max(0.0, min(1.0, score))
 
+    if tier and tier.upper() == "RED":
+        return {"score": round(score, 3), "level": "red"}
     if score < 0.45:
         level = "green"
     elif score < 0.75:
@@ -438,7 +440,8 @@ def _build_chat_pdf(messages, summary):
     packet.seek(0)
     return packet.getvalue()
 
-
+build_amod_collection()
+load_model()
 app = create_app()
 
 

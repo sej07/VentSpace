@@ -43,6 +43,11 @@ CRISIS_KEYWORDS = [
     "cant do this anymore", "can't do this anymore",
     "so tired of everything",
     "tired of being here",
+    "feel like dying",
+    "feeling like dying",
+    "i feel like dying",
+    "want to die",
+    "wanna die",
     "don't want to be alive", "dont want to be alive",
     "wish i wasn't here", "wish i was dead",
     "rather not exist",
@@ -433,6 +438,23 @@ def _build_system_prompt_with_rag(
 
 # ── Safety check ──────────────────────────────────────────────────────────────
 
+SELF_CRITICISM_KEYWORDS = [
+    "always mess up", "always ruin", "always fail",
+    "not good enough", "im not good enough", "i am not good enough",
+    "never good enough", "never get anything right",
+    "i always", "i never",
+    "so stupid", "im stupid", "i am stupid",
+    "i hate myself", "hate myself",
+    "such a failure", "im a failure", "i am a failure",
+    "worthless", "i am worthless",
+    "i ruin everything", "ruin everything",
+    "nobody likes me", "nobody cares about me",
+    "i cant do anything right", "cant do anything right",
+]
+
+def _is_self_criticism(text: str) -> bool:
+    return any(kw in text.lower().strip() for kw in SELF_CRITICISM_KEYWORDS)
+
 def _is_crisis(text: str) -> bool:
     """Hard keyword check — runs before model inference. Cannot be disabled."""
     return any(kw in text.lower().strip() for kw in CRISIS_KEYWORDS)
@@ -467,7 +489,7 @@ def _clean_response(text: str) -> str:
     text = re.sub(r"\s{2,}", " ", text).strip()
     text = re.sub(r"\s+([.,!?])", r"\1", text)
     # trim to last complete sentence
-    text = _trim_to_last_sentence(text)
+
     return text
 
 
@@ -491,7 +513,7 @@ def _parse_response(raw: str) -> dict:
             response_text = "\n".join(lines[i + 1:]).strip()
             break
 
-    response_text = _clean_response(response_text)
+    response_text = _trim_to_last_sentence(_clean_response(response_text))
     if not response_text.strip():
         response_text = FALLBACK_RESPONSES[tier]
 
@@ -618,9 +640,10 @@ def generate_response(
             {"role": "user",   "content": user_input.strip()},
         ]
         raw           = _run_inference(messages, max_new_tokens=400)
-        response_text = _clean_response(raw)
+        response_text = _trim_to_last_sentence(_clean_response(raw))
         if not response_text.strip():
             response_text = FALLBACK_RESPONSES["RED"]
+        response_text = response_text + " Please reach out to the 988 Suicide and Crisis Lifeline (call or text 988) or text HOME to 741741. You do not have to sit with this alone."
         return {
             "tier":          "RED",
             "response":      response_text,
@@ -628,6 +651,21 @@ def generate_response(
             "phase_display": phase_info["display"],
             "audio_emotion": audio_emotion,
         }
+
+    # ── Self-criticism keyword override
+    if _is_self_criticism(user_input) and not _is_crisis(user_input):
+        print("[VentSpace] YELLOW override: self-criticism keyword detected")
+        examples = _retrieve_examples(user_input, k=3)
+        if examples:
+            system_prompt = _build_system_prompt_with_rag(cycle_phase, examples, audio_emotion)
+        else:
+            system_prompt = _build_system_prompt(cycle_phase, audio_emotion)
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_input.strip()}]
+        raw = _run_inference(messages)
+        parsed = _parse_response(raw)
+        parsed["tier"] = "YELLOW"
+        parsed["response"] = parsed["response"] if parsed["response"].strip() else FALLBACK_RESPONSES["YELLOW"]
+        return {"tier": "YELLOW", "response": parsed["response"], "cycle_phase": cycle_phase, "phase_display": phase_info["display"], "audio_emotion": audio_emotion}
 
     # ── RAG retrieval ─────────────────────────────────────────────────────────
     examples = _retrieve_examples(user_input, k=3)
