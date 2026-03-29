@@ -36,6 +36,57 @@ function periodDayColor(n) {
   return ["#B83050","#D4506A","#E8607A","#F0849A","#FAB8C4","#FDD8E0"][Math.min((n||1)-1, 5)];
 }
 
+function deriveCycleContext(periodLog) {
+  const periodDayKeys = Object.entries(periodLog || {})
+    .filter(([, v]) => v && v.isPeriod)
+    .map(([k]) => k)
+    .sort();
+
+  if (!periodDayKeys.length) {
+    return {
+      cycle_phase: "unknown",
+      cycle_day: null,
+      cycle_length: 28,
+      last_period_start: null,
+    };
+  }
+
+  const runs = [];
+  let cur = [periodDayKeys[0]];
+  for (let i = 1; i < periodDayKeys.length; i += 1) {
+    if (diffDays(periodDayKeys[i - 1], periodDayKeys[i]) <= 2) cur.push(periodDayKeys[i]);
+    else {
+      runs.push(cur);
+      cur = [periodDayKeys[i]];
+    }
+  }
+  runs.push(cur);
+
+  const starts = runs.map((r) => r[0]);
+  let cycleLength = 28;
+  if (starts.length >= 2) {
+    const gaps = [];
+    for (let i = 1; i < starts.length; i += 1) gaps.push(diffDays(starts[i - 1], starts[i]));
+    cycleLength = Math.max(21, Math.min(35, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)));
+  }
+
+  const lastStartKey = starts[starts.length - 1];
+  const daysSince = diffDays(lastStartKey, todayKey());
+  const dayInCycle = (daysSince % cycleLength) + 1;
+
+  let cyclePhase = "luteal";
+  if (dayInCycle <= 5) cyclePhase = "menstrual";
+  else if (dayInCycle <= 13) cyclePhase = "follicular";
+  else if (dayInCycle <= 16) cyclePhase = "ovulation";
+
+  return {
+    cycle_phase: cyclePhase,
+    cycle_day: dayInCycle,
+    cycle_length: cycleLength,
+    last_period_start: lastStartKey,
+  };
+}
+
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const FLOW_LEVELS = [
   {id:"spotting",label:"spotting",color:"#FFD0D8"},
@@ -505,11 +556,19 @@ function generateReportPDF(entries, periodLog, summary) {
 /* ════════════════════════════════════════
    TODAY — CONTINUOUS CHAT
 ════════════════════════════════════════ */
-function TodayScreen({ onAddEntry }) {
+function TodayScreen({ onAddEntry, cycleContext }) {
   const [text, setText] = useState("");
   const [messages, setMessages] = useState([]);
   const [mode, setMode] = useState("text");
+  const [loading, setLoading] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordingError, setRecordingError] = useState("");
+  const [sampleAudio, setSampleAudio] = useState(null);
   const chatEndRef = useRef(null);
+  const recorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const streamRef = useRef(null);
+  const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:5000";
 
   useEffect(() => {
     if (chatEndRef.current) {
@@ -517,7 +576,15 @@ function TodayScreen({ onAddEntry }) {
     }
   }, [messages]);
 
-  const analyze = (input) => {
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
+
+  const localAnalyze = (input) => {
     const l = input.toLowerCase();
     if (l.includes("don't deserve") || l.includes("worthless") || l.includes("hate myself") || l.includes("want to die") || l.includes("end it")) return "red";
     if (l.includes("not good enough") || l.includes("stupid") || l.includes("fail") || l.includes("not enough") || l.includes("ugly") || l.includes("nobody cares") || l.includes("always mess")) return "yellow";
@@ -527,38 +594,163 @@ function TodayScreen({ onAddEntry }) {
   const responses = {
     green: [
       "that sounds really hard and it makes complete sense you needed to get it out. you're not overreacting — bad days don't define you.",
-      "thank you for sharing that. getting it out of your head and onto the page is already a brave step. how are you feeling now?",
-      "i hear you. it's okay to feel this way. want to keep venting or sit with this for a bit?",
-      "that's valid. sometimes just naming the feeling takes away some of its power. anything else on your mind?",
-      "you're processing, and that's healthy. no need to fix anything right now — just feel it. want to tell me more?",
+      "thank you for sharing that. getting it out of your head and onto the page is already a brave step.",
+      "that's valid. sometimes just naming the feeling takes away some of its power.",
     ],
     yellow: [
-      "hey, i noticed some self-critical language in there. that's a pattern worth paying attention to. can you think of one thing you did well recently, no matter how small?",
-      "i hear you being really hard on yourself. would you say that to a friend? try reframing it — what would you tell someone you love in this situation?",
-      "that inner critic is loud today, huh? let's challenge it together. what's one thing that went okay today?",
-      "you're noticing patterns of self-criticism, and that awareness itself is growth. what would a kinder version of that thought sound like?",
+      "i hear you being really hard on yourself. those thoughts can feel loud, but they're not the full picture of who you are.",
+      "that inner critic is loud today. one small act of self-kindness right now can help soften that edge.",
     ],
     red: [
-      "what you're sharing sounds like more than a rough day, and you deserve real support. i've been keeping track of your patterns — want me to generate session notes you can bring to a therapist?",
-      "i'm concerned about what you're telling me. please know you don't have to carry this alone. would you like me to put together a summary you could share with someone you trust?",
-      "this feels heavy, and i want you to know that reaching out for professional support is a sign of strength, not weakness. i can create notes to make that first conversation easier.",
+      "this feels heavier than a rough day. please reach out to 988 (call/text) or text HOME to 741741. you deserve support now.",
+      "you don't have to carry this alone. if you're in immediate danger, call emergency services now; otherwise 988 can support you right away.",
     ],
   };
 
-  const getResponse = (level) => {
-    const pool = responses[level];
-    return pool[Math.floor(Math.random() * pool.length)];
+  const mapTierToLevel = (tierOrLevel) => {
+    const v = (tierOrLevel || "").toString().toLowerCase();
+    if (v === "red") return "red";
+    if (v === "yellow") return "yellow";
+    if (v === "green") return "green";
+    if (v === "red" || v === "yellow" || v === "green") return v;
+    return "green";
   };
 
-  const handleSubmit = () => {
-    if (!text.trim()) return;
-    const level = analyze(text);
-    const userMsg = { role: "user", text: text.trim(), level, time: new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) };
-    const botMsg = { role: "bot", text: getResponse(level), level, time: new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) };
+  const addTurn = (userText, botText, level, extra = {}) => {
+    const ts = new Date();
+    const userMsg = {
+      role: "user",
+      text: userText,
+      level,
+      time: ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    };
+    const botMsg = {
+      role: "bot",
+      text: botText,
+      level,
+      time: ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      ...extra,
+    };
+    setMessages((prev) => [...prev, userMsg, botMsg]);
+    onAddEntry({ date: ts.toISOString(), text: userText, level, ...extra });
+  };
 
-    setMessages(prev => [...prev, userMsg, botMsg]);
-    onAddEntry({ date: new Date().toISOString(), text: text.trim(), level });
+  const fallbackTurn = (inputText) => {
+    const level = localAnalyze(inputText);
+    const pool = responses[level];
+    const botText = pool[Math.floor(Math.random() * pool.length)];
+    addTurn(inputText, botText, level, { source: "fallback" });
+  };
+
+  const analyzeText = async (inputText) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: inputText,
+          cycle_phase: cycleContext?.cycle_phase || "unknown",
+        }),
+      });
+      if (!res.ok) throw new Error("analyze request failed");
+
+      const data = await res.json();
+      const level = mapTierToLevel(data.spectrum_level || data.tier);
+      addTurn(inputText, data.response || "Thanks for sharing.", level, {
+        source: "backend",
+        tier: data.tier,
+        spectrum_score: data.spectrum_score,
+        phase_display: data.phase_display,
+      });
+    } catch (err) {
+      fallbackTurn(inputText);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const analyzeAudio = async (blobOrFile) => {
+    setLoading(true);
+    try {
+      const form = new FormData();
+      const name = blobOrFile?.name || "ventspace-recording.webm";
+      form.append("audio", blobOrFile, name);
+      form.append("cycle_phase", cycleContext?.cycle_phase || "unknown");
+
+      const res = await fetch(`${API_BASE}/analyze`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) throw new Error("audio analyze request failed");
+
+      const data = await res.json();
+      const transcript = (data.transcript || text || "voice note").trim();
+      const level = mapTierToLevel(data.spectrum_level || data.tier);
+      addTurn(transcript, data.response || "Thanks for sharing that.", level, {
+        source: "backend-audio",
+        tier: data.tier,
+        spectrum_score: data.spectrum_score,
+        audio_emotion: data.audio_emotion,
+      });
+    } catch (err) {
+      const fallbackText = text.trim() || "voice note";
+      fallbackTurn(fallbackText);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    const input = text.trim();
+    if (!input || loading) return;
     setText("");
+    await analyzeText(input);
+  };
+
+  const startRecording = async () => {
+    if (recording) return;
+    setRecordingError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+
+      const rec = new MediaRecorder(stream);
+      recorderRef.current = rec;
+
+      rec.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0) chunksRef.current.push(evt.data);
+      };
+
+      rec.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        chunksRef.current = [];
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+        }
+        if (blob.size > 0) {
+          await analyzeAudio(blob);
+        }
+      };
+
+      rec.start();
+      setRecording(true);
+    } catch (err) {
+      setRecordingError("mic permission denied or unavailable — use sample audio upload.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (!recorderRef.current) return;
+    if (recorderRef.current.state !== "inactive") recorderRef.current.stop();
+    setRecording(false);
+  };
+
+  const submitSampleAudio = async () => {
+    if (!sampleAudio || loading) return;
+    await analyzeAudio(sampleAudio);
   };
 
   const handleKeyDown = (e) => {
@@ -568,14 +760,14 @@ function TodayScreen({ onAddEntry }) {
     }
   };
 
-  const hasRedMessages = messages.some(m => m.role === "user" && m.level === "red");
+  const hasRedMessages = messages.some((m) => m.role === "user" && m.level === "red");
 
   const handleDownloadSession = () => {
     generateSessionPDF(messages);
   };
 
-  const lc = { green:"#D4F0D4", yellow:"#FDF5D4", red:"#FDE4E4" };
-  const lb = { green:"#8FCC8F", yellow:"#E8C84A", red:"#E89090" };
+  const lc = { green: "#D4F0D4", yellow: "#FDF5D4", red: "#FDE4E4" };
+  const lb = { green: "#8FCC8F", yellow: "#E8C84A", red: "#E89090" };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
@@ -655,8 +847,8 @@ function TodayScreen({ onAddEntry }) {
               rows={3}
             />
             <div style={{ display:"flex", alignItems:"center", gap:10, paddingTop:10, paddingBottom:4 }}>
-              <button onClick={handleSubmit} disabled={!text.trim()} onKeyDown={handleKeyDown} style={{ fontFamily:"'Caveat',cursive", fontSize:17, fontWeight:700, padding:"7px 22px", border:"2px solid #C4607A", background:text.trim()?"#C4607A":"#F5D8DC", color:text.trim()?"#fff":"#C4A0A8", borderRadius:3, cursor:text.trim()?"pointer":"not-allowed", transform:"rotate(-0.5deg)", boxShadow:text.trim()?"2px 3px 8px rgba(196,96,122,0.2)":"none" }}>
-                {messages.length===0 ? "read my entry →" : "send →"}
+              <button onClick={handleSubmit} disabled={!text.trim() || loading} onKeyDown={handleKeyDown} style={{ fontFamily:"'Caveat',cursive", fontSize:17, fontWeight:700, padding:"7px 22px", border:"2px solid #C4607A", background:text.trim()&&!loading?"#C4607A":"#F5D8DC", color:text.trim()&&!loading?"#fff":"#C4A0A8", borderRadius:3, cursor:text.trim()&&!loading?"pointer":"not-allowed", transform:"rotate(-0.5deg)", boxShadow:text.trim()&&!loading?"2px 3px 8px rgba(196,96,122,0.2)":"none" }}>
+                  {loading ? "analyzing..." : messages.length===0 ? "read my entry →" : "send →"}
               </button>
               <span style={{ fontFamily:"'Patrick Hand',cursive", fontSize:12, color:"#C4A0A8" }}>
                 press enter to send
@@ -664,9 +856,33 @@ function TodayScreen({ onAddEntry }) {
             </div>
           </div>
         ) : (
-          <div style={{ padding:"20px 14px", display:"flex", flexDirection:"column", alignItems:"center", gap:14, background:"#FFFEF8" }}>
-            <div style={{ cursor:"pointer" }}><MicSticker size={52}/></div>
-            <span style={{ fontFamily:"'Kalam',cursive", fontSize:14, color:"#B07080" }}>tap to start speaking…</span>
+            <div style={{ padding:"20px 14px", display:"flex", flexDirection:"column", alignItems:"center", gap:12, background:"#FFFEF8" }}>
+              <div style={{ display:"flex", gap:10, flexWrap:"wrap", justifyContent:"center" }}>
+                {!recording ? (
+                  <button onClick={startRecording} disabled={loading} style={{ fontFamily:"'Caveat',cursive", fontSize:17, fontWeight:700, padding:"8px 18px", border:"2px solid #C4607A", background:loading?"#F5D8DC":"#C4607A", color:"#fff", borderRadius:4, cursor:loading?"not-allowed":"pointer", display:"flex", alignItems:"center", gap:8 }}>
+                    <MicSticker size={18}/>
+                    start recording
+                  </button>
+                ) : (
+                  <button onClick={stopRecording} style={{ fontFamily:"'Caveat',cursive", fontSize:17, fontWeight:700, padding:"8px 18px", border:"2px solid #8B2040", background:"#8B2040", color:"#fff", borderRadius:4, cursor:"pointer", display:"flex", alignItems:"center", gap:8 }}>
+                    <MicSticker size={18}/>
+                    stop + analyze
+                  </button>
+                )}
+              </div>
+
+              <span style={{ fontFamily:"'Kalam',cursive", fontSize:14, color:"#B07080", textAlign:"center" }}>
+                {recording ? "recording... tap stop when done" : "live mic for demo"}
+              </span>
+
+              <div style={{ width:"100%", borderTop:"1px dashed #F0D8DC", paddingTop:10, display:"flex", flexDirection:"column", gap:8 }}>
+                <span style={{ fontFamily:"'Patrick Hand',cursive", fontSize:12, color:"#9A7080" }}>fallback: upload prerecorded audio</span>
+                <input type="file" accept="audio/*" onChange={(e) => setSampleAudio(e.target.files?.[0] || null)} style={{ fontFamily:"'Kalam',cursive", fontSize:13 }} />
+                <button onClick={submitSampleAudio} disabled={!sampleAudio || loading} style={{ fontFamily:"'Caveat',cursive", fontSize:16, fontWeight:700, padding:"7px 16px", border:"2px solid #C4607A", background:sampleAudio&&!loading?"#C4607A":"#F5D8DC", color:sampleAudio&&!loading?"#fff":"#C4A0A8", borderRadius:4, cursor:sampleAudio&&!loading?"pointer":"not-allowed" }}>
+                  analyze uploaded audio
+                </button>
+                {!!recordingError && <span style={{ fontFamily:"'Patrick Hand',cursive", fontSize:12, color:"#B04050" }}>{recordingError}</span>}
+              </div>
           </div>
         )}
       </ScrapCard>
@@ -1407,6 +1623,7 @@ export default function MainApp({ onLogout }) {
   const [screen,    setScreen]    = useState("today");
   const [entries,   setEntries]   = useState([]);
   const [periodLog, setPeriodLog] = useState({});
+  const cycleContext = useMemo(() => deriveCycleContext(periodLog), [periodLog]);
 
   const addEntry   = e   => setEntries(prev=>[e,...prev]);
 
@@ -1455,7 +1672,7 @@ export default function MainApp({ onLogout }) {
         </div>
         <TabNav screen={screen} setScreen={setScreen}/>
         <div style={{ maxWidth:700,margin:"0 auto",padding:"32px 24px 80px" }}>
-          {screen==="today"    && <TodayScreen    onAddEntry={addEntry}/>}
+          {screen==="today"    && <TodayScreen    onAddEntry={addEntry} cycleContext={cycleContext}/>}
           {screen==="patterns" && <PatternsScreen entries={entries}/>}
           {screen==="period"   && <PeriodScreen   periodLog={periodLog} onBulkSave={bulkSave}/>}
           {screen==="report"   && <ReportScreen   entries={entries} periodLog={periodLog}/>}
