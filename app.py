@@ -11,6 +11,8 @@ from flask_cors import CORS
 from ventspace_llm import generate_response, get_cycle_phase
 from audio_pipeline.audio_pipeline import analyze_audio
 
+_LLM_DISABLED_REASON = None
+
 
 def create_app():
     app = Flask(__name__)
@@ -132,9 +134,26 @@ def create_app():
 
 
 def _safe_generate_response(user_text, cycle_phase, audio_result):
+    global _LLM_DISABLED_REASON
+
+    # If LLM already failed once in this process, skip expensive retries.
+    if _LLM_DISABLED_REASON is not None:
+        tier = _classify_tier_heuristic(user_text)
+        fallback = _fallback_response_for_tier(tier, user_text)
+        return {
+            "tier": tier,
+            "response": fallback[tier],
+            "cycle_phase": cycle_phase,
+            "phase_display": cycle_phase,
+            "audio_emotion": (audio_result or {}).get("emotion") if audio_result else None,
+        }
+
     try:
         return generate_response(user_text, cycle_phase, audio_result)
-    except Exception:
+    except Exception as e:
+        _LLM_DISABLED_REASON = str(e)
+        print(f"[VentSpace] LLM disabled for this session due to error: {_LLM_DISABLED_REASON}")
+
         # Lightweight fallback so demo doesn't hard-fail if model load is unavailable.
         tier = _classify_tier_heuristic(user_text)
         fallback = _fallback_response_for_tier(tier, user_text)
