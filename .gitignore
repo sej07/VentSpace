@@ -41,6 +41,3 @@ models/
 # Logs
 *.log
 
-# Frontend dependency manifests (kept local for this integration branch)
-package.json
-package-lock.json
