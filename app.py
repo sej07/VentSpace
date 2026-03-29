@@ -1,6 +1,7 @@
 import io
 import os
 import tempfile
+from collections import Counter
 from datetime import datetime
 
 from flask import Flask, jsonify, request, send_file
@@ -13,6 +14,8 @@ from audio_pipeline.audio_pipeline import analyze_audio
 def create_app():
     app = Flask(__name__)
     CORS(app, resources={r"/*": {"origins": "*"}})
+    reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+    os.makedirs(reports_dir, exist_ok=True)
 
     @app.get("/health")
     def health():
@@ -98,6 +101,30 @@ def create_app():
             mimetype="application/pdf",
             as_attachment=True,
             download_name=f"ventspace-weekly-report-{datetime.now().strftime('%Y%m%d')}.pdf",
+        )
+
+    @app.post("/report/chat")
+    def report_chat():
+        data = request.get_json(silent=True) or {}
+        messages = data.get("messages", [])
+
+        if not isinstance(messages, list) or not messages:
+            return jsonify({"error": "messages array is required"}), 400
+
+        summary = _summarize_chat_messages(messages)
+        pdf_bytes = _build_chat_pdf(messages, summary)
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        file_name = f"ventspace-chat-report-{stamp}.pdf"
+        file_path = os.path.join(reports_dir, file_name)
+        with open(file_path, "wb") as fp:
+            fp.write(pdf_bytes)
+
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=file_name,
         )
 
     return app
@@ -226,6 +253,121 @@ def _wrap_text(text, width):
     if line:
         lines.append(" ".join(line))
     return lines
+
+
+def _summarize_chat_messages(messages):
+    user_msgs = [m for m in messages if m.get("role") == "user"]
+    bot_msgs = [m for m in messages if m.get("role") == "bot"]
+
+    level_counts = Counter((m.get("level") or "green").lower() for m in user_msgs)
+    total = len(user_msgs)
+    red = level_counts.get("red", 0)
+    yellow = level_counts.get("yellow", 0)
+    green = level_counts.get("green", 0)
+
+    risk_band = "green"
+    if red > 0:
+        risk_band = "red"
+    elif yellow > 0:
+        risk_band = "yellow"
+
+    phrase_bank = [
+        "not good enough",
+        "worthless",
+        "stupid",
+        "always mess up",
+        "can't do this",
+        "everyone except me",
+        "nobody cares",
+        "overwhelmed",
+    ]
+    phrase_counts = Counter()
+    for m in user_msgs:
+        txt = (m.get("text") or "").lower()
+        for p in phrase_bank:
+            if p in txt:
+                phrase_counts[p] += 1
+
+    top_phrases = phrase_counts.most_common(4)
+    highlights = []
+    for m in user_msgs[-3:]:
+        text = (m.get("text") or "").strip()
+        if text:
+            highlights.append(text[:180])
+
+    parts = [
+        f"Session contained {total} user messages and {len(bot_msgs)} companion replies.",
+        f"Risk profile: {green} healthy-venting, {yellow} self-criticism, {red} reach-out flags.",
+    ]
+    if top_phrases:
+        phrase_line = ", ".join(f"\"{p}\" ({c}x)" for p, c in top_phrases)
+        parts.append(f"Most repeated language patterns: {phrase_line}.")
+    if highlights:
+        parts.append("Recent highlights: " + " | ".join(f"\"{h}\"" for h in highlights))
+
+    if risk_band == "red":
+        parts.append("Recommendation: prioritize immediate human support and carry this report into the next therapist conversation.")
+    elif risk_band == "yellow":
+        parts.append("Recommendation: monitor recurring self-critical patterns and discuss them in the next check-in.")
+    else:
+        parts.append("Recommendation: continue regular journaling to maintain baseline awareness and resilience trends.")
+
+    return " ".join(parts)
+
+
+def _build_chat_pdf(messages, summary):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    packet = io.BytesIO()
+    c = canvas.Canvas(packet, pagesize=letter)
+    w, h = letter
+
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(48, h - 56, "VentSpace Chat Session Report")
+
+    c.setFont("Helvetica", 10)
+    c.drawString(48, h - 74, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    c.drawString(48, h - 88, f"Messages captured: {len(messages)}")
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(48, h - 116, "Session Summary")
+    c.setFont("Helvetica", 10)
+
+    y = h - 132
+    for line in _wrap_text(summary, 98):
+        c.drawString(48, y, line)
+        y -= 14
+        if y < 64:
+            c.showPage()
+            y = h - 56
+
+    y -= 8
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(48, y, "Chat Transcript")
+    y -= 16
+    c.setFont("Helvetica", 9)
+
+    for msg in messages:
+        role = (msg.get("role") or "unknown").upper()
+        level = (msg.get("level") or "").lower()
+        text = (msg.get("text") or "").strip() or "(empty)"
+        prefix = f"{role}{f' [{level}]' if level else ''}: "
+
+        for idx, line in enumerate(_wrap_text(text, 92)):
+            row = (prefix if idx == 0 else " " * len(prefix)) + line
+            c.drawString(48, y, row)
+            y -= 12
+            if y < 56:
+                c.showPage()
+                y = h - 56
+                c.setFont("Helvetica", 9)
+
+        y -= 4
+
+    c.save()
+    packet.seek(0)
+    return packet.getvalue()
 
 
 app = create_app()

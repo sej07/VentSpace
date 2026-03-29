@@ -762,8 +762,34 @@ function TodayScreen({ onAddEntry, cycleContext }) {
 
   const hasRedMessages = messages.some((m) => m.role === "user" && m.level === "red");
 
-  const handleDownloadSession = () => {
-    generateSessionPDF(messages);
+  const handleDownloadSession = async () => {
+    if (!messages.length || loading) return;
+    try {
+      setLoading(true);
+      const res = await fetch(`${API_BASE}/report/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages }),
+      });
+
+      if (!res.ok) throw new Error("chat report request failed");
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `ventspace-chat-report-${ts}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      // Fallback keeps demo resilient if backend report endpoint fails.
+      generateSessionPDF(messages);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const lc = { green: "#D4F0D4", yellow: "#FDF5D4", red: "#FDE4E4" };
