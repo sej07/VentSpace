@@ -101,32 +101,15 @@ For production/demo, **GPU is strongly recommended** for Mistral LLM inference. 
    pip install -r requirements.txt
    ```
 
-3. Build RAG embeddings (or transfer from another machine):
+3. Build RAG embeddings:
    ```bash
    python -c "from ventspace_llm import build_amod_collection; build_amod_collection()"
    ```
-   
-   **Alternative**: Transfer embeddings from another machine to avoid rebuild:
-   ```bash
-   scp -r ~/chroma_store user@gpu-machine:~/chroma_store
-   ```
 
-4. Start backend (expose on public IP):
+4. Start backend:
    ```bash
    PORT=5050 python app.py
    ```
-   
-   Note the IP address (e.g., `192.168.1.100`) or domain.
-
-### On Your Local Machine
-
-Connect frontend to remote GPU backend:
-
-```bash
-REACT_APP_API_URL=http://<gpu-machine-ip>:5050 npm start
-```
-
-Replace `<gpu-machine-ip>` with the GPU machine's IP address or hostname.
 
 ## Features
 
