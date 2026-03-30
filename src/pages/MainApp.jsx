@@ -568,7 +568,7 @@ function TodayScreen({ onAddEntry, cycleContext }) {
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
-  const API_BASE = process.env.REACT_APP_API_URL || "https://ood.explorer.northeastern.edu/node/d1007/5050";
+  const API_BASE = process.env.REACT_APP_API_URL || "https://ood.explorer.northeastern.edu/node/d1028/5050";
 
   useEffect(() => {
     if (chatEndRef.current) {

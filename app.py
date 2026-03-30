@@ -40,7 +40,7 @@ def create_app():
         info = get_cycle_phase(start_date, cycle_length=cycle_length)
         return jsonify(info)
 
-    @app.route("/node/d1007/5050/analyze", methods=["POST", "OPTIONS"])
+    @app.route("/node/d1028/5050/analyze", methods=["POST", "OPTIONS"])
     @app.post("/analyze")
     def analyze():
         cycle_phase = "unknown"

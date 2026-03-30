@@ -58,6 +58,8 @@ FALLBACK_RESPONSES = {
     "GREEN":  "That sounds like a lot to carry today. Whatever you're feeling right now is valid — you don't need a reason for it to be real.",
     "YELLOW": "That inner critic is loud right now. Those thoughts aren't the full picture of who you are, even when they feel convincing.",
     "RED":    "What you're sharing matters deeply. Please reach out to the 988 Suicide and Crisis Lifeline (call or text 988) or text HOME to 741741. You don't have to sit with this alone.",
+    "OFF_TOPIC": "This space is here for whatever you're feeling or going through. Whenever you're ready to share what's on your mind or in your heart, it's here for you.",
+
 }
 
 # ── Cycle phase data ──────────────────────────────────────────────────────────
@@ -70,6 +72,8 @@ CYCLE_PHASES = {
         "green_suggestions":  "something energising — a brisk walk, a new playlist, or reaching out to a friend she's been meaning to catch up with",
         "yellow_suggestions": "journaling — writing down three specific things she did well this week, not just general positives",
         "red_suggestions":    "calling someone she trusts right now, before doing anything else",
+        "period_comfort": "your period just ended — leafy greens and eggs help rebuild iron stores. this is a great time for energising workouts like a run or dance class. try energising breathwork like kapalabhati (short sharp exhales) to match your rising energy.",
+
     },
     "ovulation": {
         "days": "14-16",
@@ -78,6 +82,8 @@ CYCLE_PHASES = {
         "green_suggestions":  "channelling this energy into something creative or social — even a short walk outside can feel really good right now",
         "yellow_suggestions": "talking to someone she trusts — connection tends to help more than solitude right now",
         "red_suggestions":    "reaching out to a crisis line or a trusted person immediately — she does not have to sit with this alone",
+        "period_comfort": "anti-inflammatory foods like berries, salmon and avocado support peak energy. strength training or HIIT feels natural right now. try alternate nostril breathing (nadi shodhana) to stay balanced at peak cycle.",
+
     },
     "luteal": {
         "days": "17-28",
@@ -86,6 +92,8 @@ CYCLE_PHASES = {
         "green_suggestions":  "something gentle and nourishing — magnesium-rich foods like dark chocolate or nuts, or just an early night without guilt",
         "yellow_suggestions": "something grounding for the body — light stretching or a slow walk, and mood-stabilising foods like oats, salmon or leafy greens",
         "red_suggestions":    "contacting a crisis line or therapist today — these feelings deserve real support, not just self-care",
+        "period_comfort": "magnesium-rich foods like dark chocolate, nuts and oats ease PMS symptoms. swap intense cardio for pilates or walks. try 4-7-8 breathing (in 4, hold 7, out 8) to calm the nervous system before your period arrives.",
+
     },
     "menstrual": {
         "days": "1-5",
@@ -94,6 +102,9 @@ CYCLE_PHASES = {
         "green_suggestions":  "giving herself full permission to rest — comfort food, something easy to watch, no productivity required",
         "yellow_suggestions": "being as physically gentle as possible — warmth, rest, iron-rich foods like lentils or spinach, zero pressure to be okay",
         "red_suggestions":    "reaching out to a crisis line or someone she trusts — she deserves support beyond what any app can give",
+        "period_comfort": "iron-rich foods like lentils, spinach or dark chocolate can help with energy right now. gentle yoga or slow walks are kinder than intense workouts. box breathing (4 counts in, hold 4, out 4, hold 4) can ease cramps and calm the nervous system.",
+
+        
     },
     "unknown": {
         "days": "N/A",
@@ -102,6 +113,8 @@ CYCLE_PHASES = {
         "green_suggestions":  "something small and restorative — a walk, a good meal, or time with someone who makes her feel calm",
         "yellow_suggestions": "writing down what she would say to a close friend going through the same thing, then reading it back to herself",
         "red_suggestions":    "reaching out to a crisis line or someone she trusts right now — she does not have to carry this alone",
+        "period_comfort": None,
+
     },
 }
 
@@ -146,6 +159,32 @@ def load_model():
     return _model, _tokenizer
 
 
+# ── Emotion classifier ────────────────────────────────────────────────────────
+_emotion_classifier = None
+
+def _is_emotional(text: str) -> bool:
+    """
+    Returns True if the input contains emotional/personal content.
+    Uses a lightweight DistilRoBERTa emotion classifier.
+    Falls back to True (allow through) if model unavailable.
+    """
+    global _emotion_classifier
+    try:
+        if _emotion_classifier is None:
+            from transformers import pipeline
+            _emotion_classifier = pipeline(
+                "text-classification",
+                model="j-hartmann/emotion-english-distilroberta-base",
+                device=0 if torch.cuda.is_available() else -1,
+                top_k=1,
+            )
+        result = _emotion_classifier(text[:512])[0][0]
+        # Allow through if NOT neutral, or if neutral but low confidence
+        return not (result["label"] == "neutral" and result["score"] > 0.85)
+    except Exception:
+        return True  # fail open — always allow if classifier unavailable
+
+        
 # ── RAG setup ─────────────────────────────────────────────────────────────────
 
 _embedder = None
@@ -324,9 +363,11 @@ Structure:
   1. Acknowledge her specific situation — name what she actually said, not a generic opener
   2. Reflect one specific detail back — show you actually heard her
   3. Validate the feeling warmly — normalise without minimising
-  4. End with one gentle phase-appropriate suggestion: {p['green_suggestions']}
+ 4. End with one gentle phase-appropriate suggestion: {p['green_suggestions']}
+{"  5. Close with one gentle period comfort tip — food, movement or breathwork suited to this phase: " + p["period_comfort"] if p.get("period_comfort") else ""}
 Length: 120–200 words. Flowing sentences. Warm and conversational.
 Never summarise in one or two sentences — she deserves a full, present response.
+
 
 🟡 YELLOW — Self-criticism
 Triggers: identity-level attacks — "I always", "I never", "I'm so stupid", "not good enough",
@@ -335,8 +376,11 @@ days or weeks, depression mentioned explicitly, feeling worthless or like a fail
 Structure: acknowledge what she's feeling → reflect the pattern back gently (not as a lecture) →
 remind her that inner critic is not the truth → end with one grounding suggestion:
 {p['yellow_suggestions']}
+{"Optionally close with one gentle period comfort tip — food, movement or breathwork: " + p["period_comfort"] if p.get("period_comfort") else ""}
 Length: 120–180 words. Never preachy. Never a list. One suggestion only.
 
+
+Length: 120–180 words. Never preachy. Never a list. One suggestion only.
 🔴 RED — Crisis / Self-destruction
 Triggers: wanting to disappear, "no one would miss me", "everyone would be better off without me",
 "i want to end it", hopelessness about existence, any suicidal ideation explicit or implicit.
@@ -630,6 +674,20 @@ def generate_response(
     if audio_result and not audio_result.get("error"):
         audio_emotion = audio_result.get("emotion")
 
+    
+    # ── Relevance gate ────────────────────────────────────────────────────────
+    # Skip Mistral entirely for non-emotional inputs (random facts, greetings etc)
+    # Crisis and self-criticism checks run regardless — safety cannot be gated.
+    if not _is_crisis(user_input) and not _is_self_criticism(user_input) and not _is_emotional(user_input):
+        print("[VentSpace] OFF-TOPIC: input not emotional — skipping inference")
+        return {
+            "tier":          "GREEN",
+            "response":      FALLBACK_RESPONSES["OFF_TOPIC"],
+            "cycle_phase":   cycle_phase,
+            "phase_display": phase_info["display"],
+            "audio_emotion": audio_emotion,
+        }
+
     # ── Safety override ───────────────────────────────────────────────────────
     # Crisis keywords bypass RAG and use focused crisis prompt.
     # This cannot be disabled.
@@ -699,7 +757,7 @@ def generate_response(
                 attention_mask=attn_mask,
                 max_new_tokens=400,
                 do_sample=True,
-                temperature=0.90,
+                temperature=0.85,
                 top_p=0.9,
                 repetition_penalty=1.15,
                 pad_token_id=_tokenizer.eos_token_id,
